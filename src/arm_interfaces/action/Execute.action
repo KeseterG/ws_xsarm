@@ -1,0 +1,8 @@
+moveit_msgs/RobotState start_state
+moveit_msgs/RobotTrajectory trajectory
+---
+bool success
+geometry_msgs/Pose final_pose
+---
+geometry_msgs/Pose current_pose
+float32 percentage_complete

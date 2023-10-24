@@ -1,0 +1,9 @@
+geometry_msgs/Pose target
+# Mode available: Pose (0), Position (1)
+int8 mode
+---
+bool success
+float32 planning_time
+moveit_msgs/RobotState start_state
+moveit_msgs/RobotTrajectory trajectory
+---

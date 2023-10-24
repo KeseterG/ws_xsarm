@@ -1,0 +1,3 @@
+bool estop # false for normal shutdown, true for e-stop
+---
+---
