@@ -1,97 +1,230 @@
-/*********************************************************************
- * Software License Agreement (BSD License)
- *
- *  Copyright (c) 2013, SRI International
- *  All rights reserved.
- *
- *  Redistribution and use in source and binary forms, with or without
- *  modification, are permitted provided that the following conditions
- *  are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above
- *     copyright notice, this list of conditions and the following
- *     disclaimer in the documentation and/or other materials provided
- *     with the distribution.
- *   * Neither the name of SRI International nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- *  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- *  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- *  POSSIBILITY OF SUCH DAMAGE.
- *********************************************************************/
-
-/* Author: Sachin Chitta, Dave Coleman, Mike Lautman */
-
+#include "arm_test/arm_server.hpp"
+#include <algorithm>
+#include <chrono>
+#include <functional>
+#include <geometry_msgs/msg/detail/pose__struct.hpp>
+#include <limits>
+#include <memory>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/robot_model/joint_model_group.h>
+#include <moveit/utils/moveit_error_code.h>
+#include <rclcpp/executors.hpp>
+#include <rclcpp/executors/multi_threaded_executor.hpp>
+#include <rclcpp/executors/single_threaded_executor.hpp>
+#include <rclcpp/logging.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <rclcpp_action/server.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <string>
+#include <thread>
 
-#include <moveit_msgs/msg/display_robot_state.hpp>
-#include <moveit_msgs/msg/display_trajectory.hpp>
-
-#include <moveit_msgs/msg/attached_collision_object.hpp>
-#include <moveit_msgs/msg/collision_object.hpp>
-
-#include <moveit_visual_tools/moveit_visual_tools.h>
-
-#include "geometry_msgs/msg/pose.hpp"
-#include "rclcpp/rclcpp.hpp"
-
-// All source files that use ROS logging should define a file-specific
-// static const rclcpp::Logger named LOGGER, located at the top of the file
-// and inside the namespace with the narrowest scope (if there is one)
-static const rclcpp::Logger LOGGER = rclcpp::get_logger("arm_server");
-
-int main(int argc, char** argv)
+namespace urc_arm::server
 {
-  rclcpp::init(argc, argv);
-  rclcpp::NodeOptions node_options;
-  node_options.automatically_declare_parameters_from_overrides(true);
-  auto move_group_node = rclcpp::Node::make_shared("move_group_interface_tutorial", node_options);
+ArmServer::ArmServer(const rclcpp::NodeOptions& options)
+  : rclcpp_lifecycle::LifecycleNode("arm_planning_server", options)
+{
+  // output
+  RCLCPP_INFO(this->get_logger(), "Initializing arm planning server...");
 
-  // We spin up a SingleThreadedExecutor for the current state monitor to get information
-  // about the robot's state.
-  rclcpp::executors::MultiThreadedExecutor executor;
-  executor.add_node(move_group_node);
-  std::thread([&executor]() { executor.spin(); }).detach();
+  // parameters
+  declare_parameter<double>("x_positive_limit", std::numeric_limits<double>::infinity());
+  declare_parameter<double>("y_positive_limit", std::numeric_limits<double>::infinity());
+  declare_parameter<double>("z_positive_limit", std::numeric_limits<double>::infinity());
+  declare_parameter<double>("x_negative_limit", -std::numeric_limits<double>::infinity());
+  declare_parameter<double>("y_negative_limit", -std::numeric_limits<double>::infinity());
+  declare_parameter<double>("z_negative_limit", -std::numeric_limits<double>::infinity());
 
-  static const std::string PLANNING_GROUP = "interbotix_arm";
-  moveit::planning_interface::MoveGroupInterface move_group(move_group_node, PLANNING_GROUP);
-  moveit::planning_interface::PlanningSceneInterface planning_scene_interface;
-  const moveit::core::JointModelGroup* joint_model_group =
-      move_group.getCurrentState()->getJointModelGroup(PLANNING_GROUP);
+  declare_parameter<std::string>("arm_planning_group", "interbotix_arm");
 
-  RCLCPP_INFO(LOGGER, "%s", joint_model_group->getEndEffectorName().c_str());
-  RCLCPP_INFO(LOGGER, "%.2f", move_group.getCurrentPose().pose.position.z);
-  geometry_msgs::msg::Pose target = move_group.getCurrentPose().pose;
+  // spin the node for getting parameters
+  move_group_node_ = rclcpp::Node::make_shared("move_group_node");
+  move_group_node_executor = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+  move_group_node_executor->add_node(move_group_node_);
+  std::thread([this]() { this->move_group_node_executor->spin(); }).detach();
 
-  //   while (true)
-  //   {
-  RCLCPP_INFO(LOGGER, "Pose: <%.2f, %.2f, %.2f>, <%.2f, %.2f, %.2f, %.2f>", target.position.x, target.position.y,
-              target.position.z, target.orientation.x, target.orientation.y, target.orientation.z,
-              target.orientation.w);
-  //   }
+  // // setup move groups & joint model group
+  std::string arm_planning_group_name = get_parameter("arm_planning_group").as_string();
+  move_group_ =
+      std::make_shared<moveit::planning_interface::MoveGroupInterface>(move_group_node_, arm_planning_group_name);
+  RCLCPP_INFO(this->get_logger(), "Succesfully lode move group %s for the arm.", arm_planning_group_name.c_str());
 
-  target.position.x = target.position.x - 0.05;
-  move_group.setPoseTarget(target);
-  auto plan = moveit::planning_interface::MoveGroupInterface::Plan();
-  moveit::core::MoveItErrorCode success = move_group.plan(plan);
-  RCLCPP_INFO(LOGGER, success == moveit::core::MoveItErrorCode::SUCCESS ? "SUCCESS!" : "FAIL!");
-  if (success == moveit::core::MoveItErrorCode::SUCCESS)
-  {
-    move_group.execute(plan);
-  }
-  rclcpp::shutdown();
-  return 0;
+  // start action server
+  RCLCPP_INFO(this->get_logger(), "Starting action server...");
+  using namespace std::placeholders;
+
+  this->pose_planning_action_server_ = rclcpp_action::create_server<Plan>(
+      this, "arm_planning_action_server", std::bind(&ArmServer::handle_plan_goal, this, _1, _2),
+      std::bind(&ArmServer::handle_plan_cancel, this, _1), std::bind(&ArmServer::handle_plan_accepted, this, _1));
+  RCLCPP_INFO(this->get_logger(), "Planning action server started successfully.");
+
+  this->executing_server_ = rclcpp_action::create_server<Execute>(
+      this, "arm_executing_action_server", std::bind(&ArmServer::handle_execute_goal, this, _1, _2),
+      std::bind(&ArmServer::handle_execute_cancel, this, _1), std::bind(&ArmServer::handle_execute_accepted, this, _1));
+  RCLCPP_INFO(this->get_logger(), "Executing action server started successfully.");
 }
+
+rclcpp_action::GoalResponse ArmServer::handle_plan_goal(const rclcpp_action::GoalUUID& uuid,
+                                                        std::shared_ptr<const PlanGoal> goal)
+{
+  RCLCPP_INFO(get_logger(), "Received %s Goal.", goal->mode == 0 ? "Pose Planning" : "Position Planning");
+  auto position = goal->target.position;
+  if (position.x > this->get_parameter("x_positive_limit").as_double() ||
+      position.y > this->get_parameter("y_positive_limit").as_double() ||
+      position.z > this->get_parameter("z_positive_limit").as_double() ||
+      position.x < this->get_parameter("x_negative_limit").as_double() ||
+      position.y < this->get_parameter("y_negative_limit").as_double() ||
+      position.z < this->get_parameter("z_negative_limit").as_double())
+  {
+    RCLCPP_INFO(get_logger(), "Goal out of predefined workspace. Reject goal request.");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  RCLCPP_INFO(get_logger(), "Goal in predefined workspace. Accept goal request.");
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse ArmServer::handle_plan_cancel(const std::shared_ptr<PlanGoalHandle>& goal_handle)
+{
+  RCLCPP_INFO(get_logger(), "Cancel goal request %s.", goal_handle->get_goal_id().data());
+  return rclcpp_action::CancelResponse::REJECT;
+}
+
+void ArmServer::handle_plan_accepted(const std::shared_ptr<PlanGoalHandle>& goal_handle)
+{
+  auto current_goal_position = goal_handle->get_goal()->target.position;
+  auto current_goal_orientation = goal_handle->get_goal()->target.orientation;
+  RCLCPP_INFO(get_logger(),
+              "Planning request accepted! Planning to pose <x: %.2f, y: %.2f, z: %.2f>, <x: %.2f, y: %.2f, z: %.2f, w: "
+              "%.2f>, %s goals waiting ahead.",
+              current_goal_position.x, current_goal_position.y, current_goal_position.z, current_goal_orientation.w,
+              current_goal_orientation.x, current_goal_orientation.y, current_goal_orientation.z,
+              is_planning_ ? "Has" : "No");
+  std::thread([this, goal_handle]() { this->execute_pose_planning(goal_handle); }).detach();
+}
+
+void ArmServer::execute_pose_planning(const std::shared_ptr<PlanGoalHandle>& goal_handle)
+{
+  RCLCPP_INFO(get_logger(), "Executing goal.");
+  const auto goal = goal_handle->get_goal();
+  auto result = std::make_shared<PlanResult>();
+  while (is_planning_)
+  {
+    if (goal_handle->is_canceling())
+    {
+      RCLCPP_INFO(get_logger(), "Goal %s cancelled.", goal_handle->get_goal_id().data());
+      result->success = false;
+      goal_handle->canceled(result);
+      return;
+    }
+  }
+
+  is_planning_ = true;  // lock
+  RCLCPP_INFO(get_logger(), "Start planning goal.");
+  move_group_->setPoseTarget(goal->target);
+  moveit::planning_interface::MoveGroupInterface::Plan plan;
+  auto plan_result = move_group_->plan(plan);
+
+  if (plan_result == moveit::core::MoveItErrorCode::SUCCESS)
+  {
+    RCLCPP_INFO(get_logger(), "Planning success!");
+    result->trajectory = plan.trajectory_;
+    result->planning_time = plan.planning_time_;
+    result->start_state = plan.start_state_;
+    result->success = true;
+    move_group_->execute(plan);
+    goal_handle->succeed(result);
+  }
+  else
+  {
+    RCLCPP_INFO(get_logger(), "Planning failed!");
+    result->success = false;
+    goal_handle->abort(result);
+  }
+  is_planning_ = false;  // unlock
+}
+
+rclcpp_action::GoalResponse ArmServer::handle_execute_goal(const rclcpp_action::GoalUUID& uuid,
+                                                           std::shared_ptr<const ExecuteGoal> goal)
+{
+  RCLCPP_INFO(get_logger(), "Request execute request. %s override the current trajectory.",
+              goal->override ? "Will" : "Will not");
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse ArmServer::handle_execute_cancel(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
+{
+  RCLCPP_INFO(get_logger(), "Cancel executing request.");
+  return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void ArmServer::handle_execute_accepted(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
+{
+  RCLCPP_INFO(get_logger(), "Executing requset accecpted.");
+  std::thread([this, goal_handle]() { exeucute_arm_movement(goal_handle); }).detach();
+}
+
+void ArmServer::exeucute_arm_movement(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
+{
+  const auto goal = goal_handle->get_goal();
+  auto result = std::make_shared<ExecuteResult>();
+  if (goal->override)
+  {
+    move_group_->stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    is_planning_ = false;
+  }
+
+  while (is_executing_ && !goal->override)
+  {
+    if (goal_handle->is_canceling())
+    {
+      RCLCPP_INFO(get_logger(), "Goal cancelled.");
+      result->success = false;
+      goal_handle->canceled(result);
+      return;
+    }
+  }
+
+  is_executing_ = true;
+  moveit::planning_interface::MoveGroupInterface::Plan plan;
+  plan.trajectory_ = goal->trajectory;
+  plan.start_state_ = goal->start_state;
+  moveit::core::MoveItErrorCode execute_result;
+
+  is_executing_on_movement_ = true;  // flag for status feedback
+  std::thread([this, goal_handle]() {
+    RCLCPP_INFO(get_logger(), "Starting feedback!");
+    std::shared_ptr<ExecuteFeedback> feedback;
+    while (is_executing_on_movement_)
+    {
+      feedback->current_pose = move_group_->getCurrentPose().pose;
+      goal_handle->publish_feedback(feedback);
+    }
+    RCLCPP_INFO(get_logger(), "Feedback done!");
+  }).detach();
+  execute_result = move_group_->execute(plan);
+  is_executing_on_movement_ = false;  // stop feedback thread
+
+  if (execute_result == moveit::core::MoveItErrorCode::SUCCESS)
+  {
+    RCLCPP_INFO(get_logger(), "Executing success!");
+    result->final_pose = move_group_->getCurrentPose().pose;
+    result->success = true;
+    move_group_->execute(plan);
+    goal_handle->succeed(result);
+  }
+  else
+  {
+    RCLCPP_INFO(get_logger(), "Executing failed!");
+    result->success = false;
+    goal_handle->abort(result);
+  }
+  is_planning_ = false;  // unlock
+}
+
+ArmServer::~ArmServer() = default;
+}  // namespace urc_arm::server
+
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(urc_arm::server::ArmServer);

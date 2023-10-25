@@ -21,8 +21,8 @@ include_directories(
 
 # Library creation
 add_library(${PROJECT_NAME} SHARED
-  src/arm_planning_server.cpp
-  include/arm_test/arm_planning_server.hpp
+  src/arm_server.cpp
+  include/arm_test/arm_server.hpp
 )
 
 set(dependencies

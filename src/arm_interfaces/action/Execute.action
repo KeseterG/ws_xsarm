@@ -1,5 +1,7 @@
 moveit_msgs/RobotState start_state
 moveit_msgs/RobotTrajectory trajectory
+bool override # whether to stop the current trajectory in action (if have) then carry out this trajectory
+bool smooth # whether smooth the trajectory using ruckig
 ---
 bool success
 geometry_msgs/Pose final_pose
