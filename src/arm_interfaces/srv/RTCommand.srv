@@ -1,0 +1,13 @@
+int8 mode
+# here are all the modes, which corresponds to the ordinal of the entry inside RT_MODE:
+# mode 0 stop
+# mode 1 halt
+# mode 2 active
+int8 action
+# mode 0 pose
+# mode 1 velocity twist
+# mode 2 velocity jog
+---
+# wheter the transition is successful. It will only work under constrictions.
+# checkout the state transition diagram for more details.
+bool success 

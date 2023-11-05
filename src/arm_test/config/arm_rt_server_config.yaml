@@ -1,0 +1,6 @@
+arm_rtpose_server:
+  ros__parameters:
+  # everything is metric here!
+    position_err_tolerance_meters: 0.01
+    velocity_err_tolerance_meters: 0.05
+    angular_err_tolerance_radians: 0.0349 # ~ 2 deg

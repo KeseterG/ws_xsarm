@@ -29,6 +29,7 @@
 # ros2 launch interbotix_xsarm_moveit xsarm_moveit.launch.py robot_model:=px150 hardware_type:=fake
 
 import os
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from interbotix_xs_modules.xs_common import (
@@ -93,6 +94,12 @@ def launch_setup(context, *args, **kwargs):
         context=context,
         hardware_type_launch_arg=hardware_type_launch_arg
     )
+
+    servo_yaml = load_yaml("arm_test", "config/servo_config.yaml")
+    servo_params = {"moveit_servo": servo_yaml}
+    arm_rt_server_yaml = load_yaml(
+        "arm_test", "config/arm_rt_server_config.yaml")
+    arm_rt_server_params = {"arm_rtpose_server": arm_rt_server_yaml}
 
     robot_description = {'robot_description': robot_description_launch_arg}
 
@@ -192,7 +199,7 @@ def launch_setup(context, *args, **kwargs):
 
     arm_server = Node(
         package='arm_test',
-        executable='arm_test_ArmPlanAndExecuteServer',
+        executable='arm_test_ArmRTServer',
         parameters=[
             robot_description,
             robot_description_semantic,
@@ -201,7 +208,9 @@ def launch_setup(context, *args, **kwargs):
             trajectory_execution_parameters,
             moveit_controllers,
             planning_scene_monitor_parameters,
-            joint_limits
+            joint_limits,
+            servo_params,
+            arm_rt_server_params
         ],
         remappings=remappings,
         output={'both': 'screen'},

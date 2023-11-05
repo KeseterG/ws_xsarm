@@ -22,8 +22,8 @@
 
 namespace urc_arm::server
 {
-ArmServer::ArmServer(const rclcpp::NodeOptions& options)
-  : rclcpp_lifecycle::LifecycleNode("arm_planning_server", options)
+ArmPlanAndExecuteServer::ArmPlanAndExecuteServer(const rclcpp::NodeOptions& options)
+  : rclcpp::Node("arm_planning_server", options)
 {
   // output
   RCLCPP_INFO(this->get_logger(), "Initializing arm planning server...");
@@ -55,18 +55,20 @@ ArmServer::ArmServer(const rclcpp::NodeOptions& options)
   using namespace std::placeholders;
 
   this->pose_planning_action_server_ = rclcpp_action::create_server<Plan>(
-      this, "arm_planning_action_server", std::bind(&ArmServer::handle_plan_goal, this, _1, _2),
-      std::bind(&ArmServer::handle_plan_cancel, this, _1), std::bind(&ArmServer::handle_plan_accepted, this, _1));
+      this, "arm_planning_action_server", std::bind(&ArmPlanAndExecuteServer::handle_plan_goal, this, _1, _2),
+      std::bind(&ArmPlanAndExecuteServer::handle_plan_cancel, this, _1),
+      std::bind(&ArmPlanAndExecuteServer::handle_plan_accepted, this, _1));
   RCLCPP_INFO(this->get_logger(), "Planning action server started successfully.");
 
   this->executing_server_ = rclcpp_action::create_server<Execute>(
-      this, "arm_executing_action_server", std::bind(&ArmServer::handle_execute_goal, this, _1, _2),
-      std::bind(&ArmServer::handle_execute_cancel, this, _1), std::bind(&ArmServer::handle_execute_accepted, this, _1));
+      this, "arm_executing_action_server", std::bind(&ArmPlanAndExecuteServer::handle_execute_goal, this, _1, _2),
+      std::bind(&ArmPlanAndExecuteServer::handle_execute_cancel, this, _1),
+      std::bind(&ArmPlanAndExecuteServer::handle_execute_accepted, this, _1));
   RCLCPP_INFO(this->get_logger(), "Executing action server started successfully.");
 }
 
-rclcpp_action::GoalResponse ArmServer::handle_plan_goal(const rclcpp_action::GoalUUID& uuid,
-                                                        std::shared_ptr<const PlanGoal> goal)
+rclcpp_action::GoalResponse ArmPlanAndExecuteServer::handle_plan_goal(const rclcpp_action::GoalUUID& uuid,
+                                                                      std::shared_ptr<const PlanGoal> goal)
 {
   RCLCPP_INFO(get_logger(), "Received %s Goal.", goal->mode == 0 ? "Pose Planning" : "Position Planning");
   auto position = goal->target.position;
@@ -84,13 +86,14 @@ rclcpp_action::GoalResponse ArmServer::handle_plan_goal(const rclcpp_action::Goa
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
-rclcpp_action::CancelResponse ArmServer::handle_plan_cancel(const std::shared_ptr<PlanGoalHandle>& goal_handle)
+rclcpp_action::CancelResponse
+ArmPlanAndExecuteServer::handle_plan_cancel(const std::shared_ptr<PlanGoalHandle>& goal_handle)
 {
   RCLCPP_INFO(get_logger(), "Cancel goal request %s.", goal_handle->get_goal_id().data());
   return rclcpp_action::CancelResponse::REJECT;
 }
 
-void ArmServer::handle_plan_accepted(const std::shared_ptr<PlanGoalHandle>& goal_handle)
+void ArmPlanAndExecuteServer::handle_plan_accepted(const std::shared_ptr<PlanGoalHandle>& goal_handle)
 {
   auto current_goal_position = goal_handle->get_goal()->target.position;
   auto current_goal_orientation = goal_handle->get_goal()->target.orientation;
@@ -103,7 +106,7 @@ void ArmServer::handle_plan_accepted(const std::shared_ptr<PlanGoalHandle>& goal
   std::thread([this, goal_handle]() { this->execute_pose_planning(goal_handle); }).detach();
 }
 
-void ArmServer::execute_pose_planning(const std::shared_ptr<PlanGoalHandle>& goal_handle)
+void ArmPlanAndExecuteServer::execute_pose_planning(const std::shared_ptr<PlanGoalHandle>& goal_handle)
 {
   RCLCPP_INFO(get_logger(), "Executing goal.");
   const auto goal = goal_handle->get_goal();
@@ -144,27 +147,28 @@ void ArmServer::execute_pose_planning(const std::shared_ptr<PlanGoalHandle>& goa
   is_planning_ = false;  // unlock
 }
 
-rclcpp_action::GoalResponse ArmServer::handle_execute_goal(const rclcpp_action::GoalUUID& uuid,
-                                                           std::shared_ptr<const ExecuteGoal> goal)
+rclcpp_action::GoalResponse ArmPlanAndExecuteServer::handle_execute_goal(const rclcpp_action::GoalUUID& uuid,
+                                                                         std::shared_ptr<const ExecuteGoal> goal)
 {
   RCLCPP_INFO(get_logger(), "Request execute request. %s override the current trajectory.",
               goal->override ? "Will" : "Will not");
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
-rclcpp_action::CancelResponse ArmServer::handle_execute_cancel(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
+rclcpp_action::CancelResponse
+ArmPlanAndExecuteServer::handle_execute_cancel(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
 {
   RCLCPP_INFO(get_logger(), "Cancel executing request.");
   return rclcpp_action::CancelResponse::ACCEPT;
 }
 
-void ArmServer::handle_execute_accepted(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
+void ArmPlanAndExecuteServer::handle_execute_accepted(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
 {
   RCLCPP_INFO(get_logger(), "Executing requset accecpted.");
   std::thread([this, goal_handle]() { exeucute_arm_movement(goal_handle); }).detach();
 }
 
-void ArmServer::exeucute_arm_movement(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
+void ArmPlanAndExecuteServer::exeucute_arm_movement(const std::shared_ptr<ExecuteGoalHandle>& goal_handle)
 {
   const auto goal = goal_handle->get_goal();
   auto result = std::make_shared<ExecuteResult>();
@@ -223,8 +227,8 @@ void ArmServer::exeucute_arm_movement(const std::shared_ptr<ExecuteGoalHandle>& 
   is_planning_ = false;  // unlock
 }
 
-ArmServer::~ArmServer() = default;
+ArmPlanAndExecuteServer::~ArmPlanAndExecuteServer() = default;
 }  // namespace urc_arm::server
 
 #include "rclcpp_components/register_node_macro.hpp"
-RCLCPP_COMPONENTS_REGISTER_NODE(urc_arm::server::ArmServer);
+RCLCPP_COMPONENTS_REGISTER_NODE(urc_arm::server::ArmPlanAndExecuteServer);

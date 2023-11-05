@@ -10,6 +10,8 @@ find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(control_msgs REQUIRED)
+find_package(moveit_servo REQUIRED)
 
 rosidl_generate_interfaces(
   ${PROJECT_NAME}
@@ -17,10 +19,13 @@ rosidl_generate_interfaces(
     "action/Execute.action"
     "action/Enable.action"
     "action/Shutdown.action"
+    "srv/RTCommand.srv"
   DEPENDENCIES
     std_msgs
     moveit_msgs
+    control_msgs
     geometry_msgs
+    moveit_servo
 )
 
 if(BUILD_TESTING)

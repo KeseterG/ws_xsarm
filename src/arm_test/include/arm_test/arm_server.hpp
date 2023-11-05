@@ -9,6 +9,7 @@
  *
  */
 
+#include <rclcpp/node.hpp>
 #if !defined(ARM_SERVER_HPP_)
 #define ARM_SERVER_HPP_
 
@@ -50,11 +51,11 @@ typedef rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackRetur
 /**
  * @brief A central action server for all possible movement requests from the client.
  */
-class ArmServer : public rclcpp_lifecycle::LifecycleNode
+class ArmPlanAndExecuteServer : public rclcpp::Node
 {
 public:
-  explicit ArmServer(const rclcpp::NodeOptions& options);
-  ~ArmServer();
+  explicit ArmPlanAndExecuteServer(const rclcpp::NodeOptions& options);
+  ~ArmPlanAndExecuteServer();
 
 private:
   // server definition
@@ -85,13 +86,7 @@ private:
   std::atomic_bool is_planning_ = false;
   std::atomic_bool is_executing_ = false;
   std::atomic_bool is_executing_on_movement_ = false;  // for status feedback
-
-  // lifecycle methods
-  LifecycleCallback on_configure(const rclcpp_lifecycle::State& previous_state) override;
-  LifecycleCallback on_activate(const rclcpp_lifecycle::State& previous_state) override;
-  LifecycleCallback on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
-  LifecycleCallback on_cleanup(const rclcpp_lifecycle::State& previous_state) override;
-  LifecycleCallback on_shutdown(const rclcpp_lifecycle::State& previous_state) override;
+  std::atomic_bool safety_lock_on = false;
 };
 
 }  // namespace urc_arm::server
