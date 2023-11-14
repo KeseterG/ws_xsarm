@@ -62,7 +62,7 @@ public:
 
 private:
   ControlMode mode = ControlMode::IDLE;
-  ControlMode desired_mode_ = ControlMode::POSE;
+  ControlMode desired_mode_ = ControlMode::TWIST;
   std::atomic_bool pose_tracking_pause = false;
   std::atomic_bool pose_tracking_stop = false;
   std::mutex mode_lock;

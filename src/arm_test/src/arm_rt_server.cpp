@@ -231,6 +231,22 @@ void ArmRTServer::unpauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Req
   }
 }
 
+void ArmRTServer::switchMode(const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+                             const std::shared_ptr<std_srvs::srv::SetBool::Response>& response)
+{
+  mode_lock.lock();
+  if (request->data)
+  {
+    desired_mode_ = ControlMode::POSE;
+  }
+  else
+  {
+    desired_mode_ = ControlMode::TWIST;
+  }
+  response->success = true;
+  mode_lock.unlock();
+}
+
 void ArmRTServer::moveToPoseUpdate()
 {
   for (;;)
