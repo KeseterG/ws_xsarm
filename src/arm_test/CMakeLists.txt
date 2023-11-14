@@ -27,6 +27,8 @@ add_library(${PROJECT_NAME} SHARED
   include/arm_test/arm_server.hpp
   src/arm_rt_server.cpp
   include/arm_test/arm_rt_server.hpp
+  src/servo_node.cpp
+  include/arm_test/servo_node.hpp
 )
 
 set(dependencies
@@ -61,9 +63,12 @@ rclcpp_components_register_node(
   EXECUTABLE ${PROJECT_NAME}_ArmRTServer
 )
 
-# Simple tests
-add_executable(move src/test.cpp)
-ament_target_dependencies(move ${dependencies})
+rclcpp_components_register_node(
+  ${PROJECT_NAME}
+  PLUGIN "urc_arm::server::ServoNode"
+  EXECUTABLE ${PROJECT_NAME}_ServoNode
+)
+
 
 # Install launch files.
 install(
@@ -76,7 +81,6 @@ install(
 # Install library
 install(TARGETS
   ${PROJECT_NAME}
-  move
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

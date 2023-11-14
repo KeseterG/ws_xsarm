@@ -103,6 +103,7 @@ ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options) : rclcpp::Node("arm
       rclcpp::Rate(1).sleep();
     }
   }).detach();
+  std::thread([this]() { this->loop(); }).detach();
 
   RCLCPP_INFO(get_logger(), "Arm RT Server initialization complete.");
 }
@@ -208,40 +209,42 @@ void ArmRTServer::stop()
 
 void ArmRTServer::loop()
 {
-  switch (state)
-  {
-    case OFF:
-    case HALT:
-      // reset all the flags so none of the command send on these states actually is effective
-      *recent_joint_jog_updated_ = false;
-      *recent_twist_updated_ = false;
-      *recent_pose_updated_ = false;
-      break;
-    case ACTIVE:
-      // not setting the flags anymore. the new requests from the client will reset the flag and make the commands
-      // effective.
-      switch (mode)
-      {
-        case TWIST:
-          if (latest_twist_command)
-          {
-          }
-          break;
-        case POSE:
-          if (recent_pose_updated_)
-          {
-            pose_tracker_->moveToPose(Eigen::Vector3d::Ones() * 0.02, 3.0 / 360 * 2 * 3.1415926, 10.0);
-            *recent_pose_updated_ = false;
-          }
-          break;
-        case JOG:
-          if (recent_joint_jog_updated_)
-          {
-          }
-          break;
-      }
-      break;
-  }
+  servo_->setPaused(false);
+  // switch (state)
+  // {
+  //   case OFF:
+  //   case HALT:
+  //     // reset all the flags so none of the command send on these states actually is effective
+  //     *recent_joint_jog_updated_ = false;
+  //     *recent_twist_updated_ = false;
+  //     *recent_pose_updated_ = false;
+  //     break;
+  //   case ACTIVE:
+  //     // not setting the flags anymore. the new requests from the client will reset the flag and make the commands
+  //     // effective.
+  //     switch (mode)
+  //     {
+  //       case TWIST:
+  //         if (latest_twist_command)
+  //         {
+  //         }
+  //         break;
+  //       case POSE:
+  //         if (recent_pose_updated_)
+  //         {
+  //           pose_tracker_->moveToPose(Eigen::Vector3d::Ones() * 0.02, 3.0 / 360 * 2 * 3.1415926, 10.0);
+  //           *recent_pose_updated_ = false;
+  //         }
+  //         break;
+  //       case JOG:
+  //         if (recent_joint_jog_updated_)
+  //         {
+  //         }
+  //         break;
+  //     }
+  //     break;
+  // }
+  servo_->start();
 }
 
 }  // namespace urc_arm::server
