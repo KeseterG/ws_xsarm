@@ -1,10 +1,11 @@
 #ifndef ARM_RT_SERVER
 #define ARM_RT_SERVER
 
-#include <arm_interfaces/srv/detail/rt_command__struct.hpp>
+#include <array>
 #include <atomic>
 #include <control_msgs/msg/detail/joint_jog__struct.hpp>
 #include <cstdint>
+#include <geometry_msgs/msg/detail/pose__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist_stamped__struct.hpp>
 #include <map>
@@ -19,97 +20,101 @@
 #include "moveit_servo/servo.h"
 #include "moveit/planning_scene_monitor/planning_scene_monitor.h"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/detail/collision_object__struct.hpp>
 #include <moveit_msgs/msg/detail/planning_scene__struct.hpp>
 #include <moveit_servo/pose_tracking.h>
 #include <moveit_servo/servo_parameters.h>
 #include <moveit_servo/servo_parameters.h>
 #include <moveit_servo/make_shared_from_pool.h>
+#include <mutex>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
 #include <rclcpp/executors/single_threaded_executor.hpp>
+#include <rclcpp/node.hpp>
 #include <rclcpp/publisher.hpp>
+#include <rclcpp/rate.hpp>
 #include <rclcpp/service.hpp>
+#include <rclcpp/subscription.hpp>
+#include <std_msgs/msg/detail/int8__struct.hpp>
 #include <std_msgs/msg/detail/string__struct.hpp>
 #include <std_srvs/srv/detail/set_bool__struct.hpp>
 #include <thread>
 
-#include "arm_interfaces/srv/rt_command.hpp"
-
 namespace urc_arm::server
 {
 
-typedef arm_interfaces::srv::RTCommand RTCommand;
-typedef arm_interfaces::srv::RTCommand::Request RTRequest;
-typedef arm_interfaces::srv::RTCommand::Response RTResponse;
-
-enum CONTROL_STATUS
-{
-  OFF,
-  HALT,
-  ACTIVE
-};
-
-enum RT_MODE
+enum ControlMode
 {
   POSE,
   TWIST,
-  JOG
+  IDLE
 };
-
-const std::map<int8_t, RT_MODE> RT_MODE_MAP{ { 0, POSE }, { 1, TWIST }, { 2, JOG } };
-
 class ArmRTServer : public rclcpp::Node
 {
 public:
-  explicit ArmRTServer(const rclcpp::NodeOptions& options);
-  ~ArmRTServer();
+  ArmRTServer(const rclcpp::NodeOptions& options);
+
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  rclcpp::node_interfaces::NodeBaseInterface::SharedPtr get_node_base_interface()
+  {
+    return node_->get_node_base_interface();
+  }
 
 private:
-  // servo executor and nodes
-  std::shared_ptr<rclcpp::Node> servo_node_;
-  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> servo_node_executor_;
+  ControlMode mode = ControlMode::IDLE;
+  ControlMode desired_mode_ = ControlMode::POSE;
+  std::atomic_bool pose_tracking_pause = false;
+  std::atomic_bool pose_tracking_stop = false;
+  std::mutex mode_lock;
+  geometry_msgs::msg::PoseStamped current_pose_target_;
+
+  rclcpp::Rate::SharedPtr update_freq;
+  std::array<double, 3> config_parameters;
+
+  std::shared_ptr<rclcpp::Node> node_;
   std::unique_ptr<moveit_servo::Servo> servo_;
-  std::unique_ptr<moveit_servo::PoseTracking> pose_tracker_;
+  std::unique_ptr<moveit_servo::PoseTracking> pose_tracking_;
+  std::shared_ptr<rclcpp::Node> move_group_node_;
+  std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> move_group_node_executor_;
+  std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
+
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<planning_scene_monitor::PlanningSceneMonitor> planning_scene_monitor_;
-  std::shared_ptr<std::thread> servo_loop_thread_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_target_subscriber_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_target_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Int8>::SharedPtr control_status_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr current_pose_publisher_;
 
-  // rt command state and stauts flags
-  std::shared_ptr<geometry_msgs::msg::TwistStamped> latest_twist_command;
-  std::shared_ptr<std::atomic_bool> recent_twist_updated_;
-  std::shared_ptr<control_msgs::msg::JointJog> latest_joint_jog_command;
-  std::shared_ptr<std::atomic_bool> recent_joint_jog_updated_;
-  std::shared_ptr<geometry_msgs::msg::PoseStamped> latest_pose_command;
-  std::shared_ptr<std::atomic_bool> recent_pose_updated_;
+  /** \brief Start the servo loop. Must be called once to begin Servoing. */
+  void startServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                  const std::shared_ptr<std_srvs::srv::Trigger::Response>& response);
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_servo_service_;
 
-  // mode & flags
-  std::atomic<CONTROL_STATUS> state = CONTROL_STATUS::OFF;
-  std::atomic<RT_MODE> mode = RT_MODE::TWIST;
-  std::atomic_bool safety_lock_on = false;
+  /** \brief Stop the servo loop. This involves more overhead than pauseCB, e.g. it clears the planning scene monitor.
+   * We recommend using pauseCB/unpauseCB if you will resume the Servo loop soon.
+   */
+  void stopServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                 const std::shared_ptr<std_srvs::srv::Trigger::Response>& response);
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_servo_service_;
 
-  // command subscribers
-  std::shared_ptr<rclcpp::Subscription<control_msgs::msg::JointJog>> joint_jog_subscriber_;
-  std::shared_ptr<rclcpp::Subscription<geometry_msgs::msg::TwistStamped>> cartician_velocity_subscriber_;
-  std::shared_ptr<rclcpp::Subscription<geometry_msgs::msg::PoseStamped>> rt_pose_subscriber_;
+  /** \brief Pause the servo loop but continue monitoring joint state so we can resume easily. */
+  void pauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                  const std::shared_ptr<std_srvs::srv::Trigger::Response>& response);
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr pause_servo_service_;
 
-  // status publisher
-  std::shared_ptr<rclcpp::Publisher<std_msgs::msg::String>> rt_status;
+  /** \brief Resume the servo loop after pauseCB has been called. */
+  void unpauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                    const std::shared_ptr<std_srvs::srv::Trigger::Response>& response);
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr unpause_servo_service_;
 
-  // services provided
-  std::shared_ptr<rclcpp::Service<RTCommand>> rt_cmd_service_;
-  std::shared_ptr<rclcpp::Service<std_srvs::srv::SetBool>> pause_servo_service_;
+  /** \brief Switch servoing control mode. Only being effective during idle state.
+   * True for twist, false for pose tracking.
+   */
+  void switchMode(const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+                  const std::shared_ptr<std_srvs::srv::SetBool::Response>& response);
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr swtich_mode_service;
 
-  // methods for state transitions
-  void handleTransitionRequests(std::shared_ptr<RTRequest> request, std::shared_ptr<RTResponse> response);
-
-  void active();
-  void halt();
-  void stop();
-  void processJointJogCommand(std::shared_ptr<control_msgs::msg::JointJog> joint_jog_cmd);
-  void processTwistCommand(std::shared_ptr<geometry_msgs::msg::TwistStamped> twist_cmd);
-  void processPoseCommand(std::shared_ptr<geometry_msgs::msg::PoseStamped> pose_cmd);
-
-  void loop();
+  void moveToPoseUpdate();
 };
 
 }  // namespace urc_arm::server

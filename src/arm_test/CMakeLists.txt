@@ -12,7 +12,6 @@ find_package(moveit_visual_tools REQUIRED)
 find_package(moveit_servo REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
-find_package(behaviortree_ros2 REQUIRED)
 find_package(example_interfaces REQUIRED)
 find_package(arm_interfaces REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -41,8 +40,8 @@ set(dependencies
   "moveit_visual_tools"
   "geometry_msgs"
   "example_interfaces"
-  "arm_interfaces"
   "moveit_servo"
+  "arm_interfaces"
   "std_srvs"
 )
 
@@ -67,6 +66,17 @@ rclcpp_components_register_node(
   ${PROJECT_NAME}
   PLUGIN "urc_arm::server::ServoNode"
   EXECUTABLE ${PROJECT_NAME}_ServoNode
+)
+
+add_executable(servo_keyboard src/arm_keyboard.cpp)
+ament_target_dependencies(servo_keyboard
+  ${dependencies}
+)
+install(
+  TARGETS
+    servo_keyboard
+  DESTINATION
+    lib/${PROJECT_NAME}
 )
 
 

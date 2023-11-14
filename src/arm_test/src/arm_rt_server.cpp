@@ -1,8 +1,9 @@
 #include "arm_test/arm_rt_server.hpp"
 #include <Eigen/src/Core/Matrix.h>
-#include <arm_interfaces/srv/detail/rt_command__struct.hpp>
 #include <control_msgs/msg/detail/joint_jog__struct.hpp>
+#include <geometry_msgs/msg/detail/pose__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
+#include <geometry_msgs/msg/detail/transform_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist_stamped__struct.hpp>
 #include <memory>
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
@@ -18,15 +19,22 @@
 #include <rclcpp/publisher.hpp>
 #include <rclcpp/qos.hpp>
 #include <rclcpp/rate.hpp>
+#include <rclcpp/time.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <std_msgs/msg/detail/int8__struct.hpp>
 #include <std_msgs/msg/detail/string__struct.hpp>
+#include <std_srvs/srv/detail/set_bool__struct.hpp>
 #include <string>
+#include <thread>
 
 namespace urc_arm::server
 {
-ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options) : rclcpp::Node("arm_rtpose_server", options)
+ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options)
+  : rclcpp::Node("arm_rt_server", options)
+  , node_{ std::make_shared<rclcpp::Node>("servo_node", options) }
+  , move_group_node_{ std::make_shared<rclcpp::Node>("move_group_node", options) }
 {
-  RCLCPP_INFO(get_logger(), "Starting Initializing Arm RT Pose server...");
+  RCLCPP_INFO(get_logger(), "Servo node starting...");
   if (!options.use_intra_process_comms())
   {
     RCLCPP_WARN_STREAM(get_logger(),
@@ -34,28 +42,81 @@ ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options) : rclcpp::Node("arm
                        "\nextra_arguments=[{'use_intra_process_comms' : True}]\nto the Servo composable node "
                        "in the launch file");
   }
-  servo_node_ = std::make_shared<rclcpp::Node>("servo_node", options);
 
-  RCLCPP_INFO(get_logger(), "Creating servo...");
+  declare_parameter<std::string>("arm_planning_group", "interbotix_arm");
+
+  // Set up services for interacting with Servo
+  start_servo_service_ = node_->create_service<std_srvs::srv::Trigger>(
+      "~/start_servo", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                              const std::shared_ptr<std_srvs::srv::Trigger::Response>& response) {
+        return startServo(request, response);
+      });
+  stop_servo_service_ = node_->create_service<std_srvs::srv::Trigger>(
+      "~/stop_servo", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                             const std::shared_ptr<std_srvs::srv::Trigger::Response>& response) {
+        return stopServo(request, response);
+      });
+  pause_servo_service_ = node_->create_service<std_srvs::srv::Trigger>(
+      "~/pause_servo", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                              const std::shared_ptr<std_srvs::srv::Trigger::Response>& response) {
+        return pauseServo(request, response);
+      });
+  unpause_servo_service_ = node_->create_service<std_srvs::srv::Trigger>(
+      "~/unpause_servo", [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>& request,
+                                const std::shared_ptr<std_srvs::srv::Trigger::Response>& response) {
+        return unpauseServo(request, response);
+      });
+  swtich_mode_service = node_->create_service<std_srvs::srv::SetBool>(
+      "~/switch_mode", [this](const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+                              const std::shared_ptr<std_srvs::srv::SetBool::Response>& response) {
+        return switchMode(request, response);
+      });
+
+  pose_target_subscriber_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
+      "~/pose_target_cmds", rclcpp::SystemDefaultsQoS(),
+      [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) { current_pose_target_ = *msg; });
+  pose_target_publisher_ =
+      node_->create_publisher<geometry_msgs::msg::PoseStamped>("/target_pose", rclcpp::SystemDefaultsQoS());
+
+  control_status_publisher_ =
+      node_->create_publisher<std_msgs::msg::Int8>("~/control_status", rclcpp::SystemDefaultsQoS());
+  current_pose_publisher_ =
+      node_->create_publisher<geometry_msgs::msg::Pose>("~/current_pose", rclcpp::SystemDefaultsQoS());
+
+  // Can set robot_description name from parameters
+  std::string robot_description_name = "robot_description";
+  node_->get_parameter_or("robot_description_name", robot_description_name, robot_description_name);
+
+  // spin the node for getting parameters
+  move_group_node_ = rclcpp::Node::make_shared("move_group_node");
+  move_group_node_executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+  move_group_node_executor_->add_node(move_group_node_);
+  std::thread([this]() { this->move_group_node_executor_->spin(); }).detach();
+
+  // // setup move groups & joint model group
+  std::string arm_planning_group_name = get_parameter("arm_planning_group").as_string();
+  move_group_ =
+      std::make_shared<moveit::planning_interface::MoveGroupInterface>(move_group_node_, arm_planning_group_name);
+  RCLCPP_INFO(this->get_logger(), "Succesfully lode move group %s for the arm.", arm_planning_group_name.c_str());
+
   // Get the servo parameters
-  auto servo_parameters = moveit_servo::ServoParameters::makeServoParameters(servo_node_);
+  auto servo_parameters = moveit_servo::ServoParameters::makeServoParameters(node_);
   if (servo_parameters == nullptr)
   {
-    RCLCPP_ERROR(get_logger(), "Failed to load the servo parameters.");
-    throw std::runtime_error("Failed to load the servo parameters.");
+    RCLCPP_ERROR(get_logger(), "Failed to load the servo parameters");
+    throw std::runtime_error("Failed to load the servo parameters");
   }
 
   // Set up planning_scene_monitor
   planning_scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(
-      servo_node_, "robot_description", "planning_scene_monitor");
+      node_, robot_description_name, "planning_scene_monitor");
   planning_scene_monitor_->startStateMonitor(servo_parameters->joint_topic);
   planning_scene_monitor_->startSceneMonitor(servo_parameters->monitored_planning_scene_topic);
-  planning_scene_monitor_->setPlanningScenePublishingFrequency(30);
+  planning_scene_monitor_->setPlanningScenePublishingFrequency(25);
   planning_scene_monitor_->getStateMonitor()->enableCopyDynamics(true);
   planning_scene_monitor_->startPublishingPlanningScene(planning_scene_monitor::PlanningSceneMonitor::UPDATE_SCENE,
-                                                        std::string(servo_node_->get_fully_qualified_name()) +
+                                                        std::string(node_->get_fully_qualified_name()) +
                                                             "/publish_planning_scene");
-
   // If the planning scene monitor in servo is the primary one we provide /get_planning_scene service so RViz displays
   // or secondary planning scene monitors can fetch the scene, otherwise we request the planning scene from the
   // primary planning scene monitor (e.g. move_group)
@@ -63,188 +124,145 @@ ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options) : rclcpp::Node("arm
     planning_scene_monitor_->providePlanningSceneService();
   else
     planning_scene_monitor_->requestPlanningSceneState();
+  std::cout << servo_parameters->ee_frame_name << std::endl;
 
-  // Create servo
-  RCLCPP_INFO(get_logger(), "Creating servo...");
-  servo_ = std::make_unique<moveit_servo::Servo>(servo_node_, servo_parameters, planning_scene_monitor_);
+  double update_freq_value = get_parameter_or("update_freq", 10.0);
+  update_freq = std::make_shared<rclcpp::Rate>(update_freq_value);
+  config_parameters[0] = get_parameter_or("position_err_tolerance_meters", 0.01);
+  config_parameters[1] = get_parameter_or("velocity_err_tolerance_meters", 0.05);
+  config_parameters[2] = get_parameter_or("angular_err_tolerance_radians", 0.0349);
 
-  // Create pose tracker
-  RCLCPP_INFO(get_logger(), "Creating pose tracker...");
-  pose_tracker_ = std::make_unique<moveit_servo::PoseTracking>(servo_node_, servo_parameters, planning_scene_monitor_);
-
-  // Create service
-  RCLCPP_INFO(get_logger(), "Starting state change services...");
-  rt_cmd_service_ = create_service<arm_interfaces::srv::RTCommand>(
-      "/cmd_rt_mode", [this](const std::shared_ptr<RTRequest> request, const std::shared_ptr<RTResponse> response) {
-        handleTransitionRequests(request, response);
-      });
-
-  // Create command subscribers
-  RCLCPP_INFO(get_logger(), "Starting subscriptions...");
-  joint_jog_subscriber_ = create_subscription<control_msgs::msg::JointJog>(
-      "cmd_joint_jog", rclcpp::SystemDefaultsQoS(),
-      [this](std::shared_ptr<control_msgs::msg::JointJog> cmd) { processJointJogCommand(cmd); });
-  cartician_velocity_subscriber_ = create_subscription<geometry_msgs::msg::TwistStamped>(
-      "cmd_cartician_velocity", rclcpp::SystemDefaultsQoS(),
-      [this](const std::shared_ptr<geometry_msgs::msg::TwistStamped> cmd) { processTwistCommand(cmd); });
-  rt_pose_subscriber_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "cmd_rt_pose", rclcpp::SystemDefaultsQoS(),
-      [this](std::shared_ptr<geometry_msgs::msg::PoseStamped> cmd) { processPoseCommand(cmd); });
-
-  // Create state publisher
-  RCLCPP_INFO(get_logger(), "Starting publisher of the current state...");
-  rt_status = create_publisher<std_msgs::msg::String>("arm_rt_server_state", rclcpp::SystemDefaultsQoS());
+  // Create threads
   std::thread([this]() {
     for (;;)
     {
-      auto msg = std_msgs::msg::String();
-      msg.data = std::to_string(state);
-      rt_status->publish(msg);
-      rclcpp::Rate(1).sleep();
+      mode_lock.lock();
+      auto msg = std_msgs::msg::Int8();
+      msg.data = mode;
+      mode_lock.unlock();
+      control_status_publisher_->publish(msg);
+      update_freq->sleep();
     }
   }).detach();
-  std::thread([this]() { this->loop(); }).detach();
+  std::thread([this]() {
+    for (;;)
+    {
+      current_pose_publisher_->publish(move_group_->getCurrentPose().pose);
+      update_freq->sleep();
+    }
+  }).detach();
 
-  RCLCPP_INFO(get_logger(), "Arm RT Server initialization complete.");
+  // Create Servo
+  servo_ = std::make_unique<moveit_servo::Servo>(node_, servo_parameters, planning_scene_monitor_);
+  RCLCPP_INFO(get_logger(), "Servo node has started.");
+  pose_tracking_ = std::make_unique<moveit_servo::PoseTracking>(node_, servo_parameters, planning_scene_monitor_);
+  RCLCPP_INFO(get_logger(), "Pose tracking node has started.");
 }
 
-ArmRTServer::~ArmRTServer() = default;
-
-void ArmRTServer::processJointJogCommand(std::shared_ptr<control_msgs::msg::JointJog> joint_jog)
+void ArmRTServer::startServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& /* unused */,
+                             const std::shared_ptr<std_srvs::srv::Trigger::Response>& response)
 {
-  if (mode != RT_MODE::JOG)
+  mode_lock.lock();
+  if (mode != IDLE)
   {
+    RCLCPP_WARN(get_logger(), "RT Control has already started!");
+    response->success = false;
+    response->message = "RT Control has already started!";
     return;
   }
 
-  latest_joint_jog_command = joint_jog;
-  *recent_joint_jog_updated_ = true;
-}
-
-void ArmRTServer::processTwistCommand(std::shared_ptr<geometry_msgs::msg::TwistStamped> twist_command)
-{
-  if (mode != RT_MODE::TWIST)
-  {
-    return;
-  }
-
-  latest_twist_command = twist_command;
-  *recent_twist_updated_ = true;
-}
-
-void ArmRTServer::processPoseCommand(std::shared_ptr<geometry_msgs::msg::PoseStamped> pose_command)
-{
-  if (mode != RT_MODE::POSE)
-  {
-    return;
-  }
-
-  latest_pose_command = pose_command;
-  *recent_pose_updated_ = true;
-}
-
-void ArmRTServer::handleTransitionRequests(std::shared_ptr<RTRequest> request, std::shared_ptr<RTResponse> response)
-{
-  RCLCPP_INFO(get_logger(),
-              "Received mode change request: from current mode %s to mode %d, with action request to mode %d.",
-              std::to_string(state).c_str(), request->mode, request->action);
-
-  switch (request->mode)
-  {
-    case 0:  // stop
-      RCLCPP_INFO(get_logger(), "Transition to STOP...");
-      stop();
-      response->success = true;
-      break;
-    case 1:  // halt
-      RCLCPP_INFO(get_logger(), "Transition to HALT...");
-      halt();
-      mode = RT_MODE_MAP.at(request->action);
-      state = CONTROL_STATUS::HALT;
-      response->success = true;
-      break;
-    case 2:  // active
-      RCLCPP_INFO(get_logger(), "Transition to ACTIVE...");
-      mode = RT_MODE_MAP.at(request->action);
-      if (!safety_lock_on)
-      {
-        active();
-        state = CONTROL_STATUS::ACTIVE;
-        response->success = true;
-      }
-      else
-      {
-        RCLCPP_INFO(get_logger(), "Safety lock on. Unable to be active. Please first go to HALT state to unlock.");
-        response->success = false;
-      }
-
-      break;
-    default:
-      response->success = false;
-      RCLCPP_INFO(get_logger(), "Invalid mode choice! Mode should be [0, 2], but receiving mode %d.", request->mode);
-  }
-}
-
-void ArmRTServer::active()
-{
-  servo_->setPaused(false);
-  pose_tracker_->stopMotion();
-  safety_lock_on = true;
-}
-
-void ArmRTServer::halt()
-{
+  pose_tracking_->stopMotion();
   servo_->setPaused(true);
-  pose_tracker_->stopMotion();
-  safety_lock_on = false;
+
+  if (desired_mode_ == ControlMode::POSE)
+  {
+    mode = ControlMode::POSE;
+    pose_tracking_->resetTargetPose();
+    std::thread([this]() { moveToPoseUpdate(); }).detach();
+  }
+  else if (desired_mode_ == ControlMode::TWIST)
+  {
+    mode = ControlMode::TWIST;
+
+    servo_->start();
+  }
+  mode_lock.unlock();
+  response->success = true;
 }
 
-void ArmRTServer::stop()
+void ArmRTServer::stopServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& /* unused */,
+                            const std::shared_ptr<std_srvs::srv::Trigger::Response>& response)
 {
+  mode_lock.lock();
+  mode = IDLE;
+  mode_lock.unlock();
+
   servo_->setPaused(true);
-  pose_tracker_->stopMotion();
-  pose_tracker_->resetTargetPose();
-  safety_lock_on = true;
+  pose_tracking_stop = true;
+  pose_tracking_->stopMotion();
+  response->success = true;
 }
 
-void ArmRTServer::loop()
+void ArmRTServer::pauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& /* unused */,
+                             const std::shared_ptr<std_srvs::srv::Trigger::Response>& response)
 {
-  servo_->setPaused(false);
-  // switch (state)
-  // {
-  //   case OFF:
-  //   case HALT:
-  //     // reset all the flags so none of the command send on these states actually is effective
-  //     *recent_joint_jog_updated_ = false;
-  //     *recent_twist_updated_ = false;
-  //     *recent_pose_updated_ = false;
-  //     break;
-  //   case ACTIVE:
-  //     // not setting the flags anymore. the new requests from the client will reset the flag and make the commands
-  //     // effective.
-  //     switch (mode)
-  //     {
-  //       case TWIST:
-  //         if (latest_twist_command)
-  //         {
-  //         }
-  //         break;
-  //       case POSE:
-  //         if (recent_pose_updated_)
-  //         {
-  //           pose_tracker_->moveToPose(Eigen::Vector3d::Ones() * 0.02, 3.0 / 360 * 2 * 3.1415926, 10.0);
-  //           *recent_pose_updated_ = false;
-  //         }
-  //         break;
-  //       case JOG:
-  //         if (recent_joint_jog_updated_)
-  //         {
-  //         }
-  //         break;
-  //     }
-  //     break;
-  // }
-  servo_->start();
+  if (desired_mode_ == ControlMode::POSE)
+  {
+    servo_->setPaused(true);
+  }
+  else if (desired_mode_ == ControlMode::TWIST)
+  {
+    pose_tracking_pause = true;
+  }
+
+  response->success = true;
+}
+
+void ArmRTServer::unpauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& /* unused */,
+                               const std::shared_ptr<std_srvs::srv::Trigger::Response>& response)
+{
+  if (desired_mode_ == ControlMode::POSE)
+  {
+    servo_->setPaused(false);
+  }
+  else if (desired_mode_ == ControlMode::TWIST)
+  {
+    pose_tracking_pause = false;
+  }
+}
+
+void ArmRTServer::moveToPoseUpdate()
+{
+  for (;;)
+  {
+    mode_lock.lock();
+
+    if (mode != POSE)
+      break;
+
+    if (pose_tracking_stop)
+    {
+      RCLCPP_INFO(get_logger(), "Stop flag see. Stopping...");
+      pose_tracking_stop = false;
+      break;
+    }
+
+    if (!pose_tracking_pause)
+    {
+      geometry_msgs::msg::TransformStamped current_ee_tf;
+      pose_tracking_->getCommandFrameTransform(current_ee_tf);
+
+      current_pose_target_.header.frame_id = current_ee_tf.header.frame_id;
+      current_pose_target_.header.stamp = node_->get_clock()->now();
+
+      pose_target_publisher_->publish(current_pose_target_);
+      pose_tracking_->moveToPose(Eigen::Vector3d(config_parameters[0], config_parameters[0], config_parameters[0]),
+                                 config_parameters[2], 1.0);
+      mode_lock.unlock();
+    }
+
+    update_freq->sleep();
+  }
 }
 
 }  // namespace urc_arm::server
