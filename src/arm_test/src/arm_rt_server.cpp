@@ -26,6 +26,7 @@
 #include <std_srvs/srv/detail/set_bool__struct.hpp>
 #include <string>
 #include <thread>
+#include <unistd.h>
 
 namespace urc_arm::server
 {
@@ -138,24 +139,37 @@ ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options)
     {
       mode_lock.lock();
       auto msg = std_msgs::msg::Int8();
-      msg.data = mode;
+      switch (mode)
+      {
+        case POSE:
+          msg.data = 1;
+          break;
+        case TWIST:
+          msg.data = 2;
+          break;
+        default:
+          msg.data = 0;
+      }
       mode_lock.unlock();
       control_status_publisher_->publish(msg);
       update_freq->sleep();
     }
   }).detach();
-  std::thread([this]() {
-    for (;;)
-    {
-      current_pose_publisher_->publish(move_group_->getCurrentPose().pose);
-      update_freq->sleep();
-    }
-  }).detach();
+  // std::thread([this]() {
+  //   for (;;)
+  //   {
+  //     current_pose_publisher_->publish(move_group_->getCurrentPose().pose);
+  //     update_freq->sleep();
+  //   }
+  // }).detach();
 
   // Create Servo
   servo_ = std::make_unique<moveit_servo::Servo>(node_, servo_parameters, planning_scene_monitor_);
+  servo_->setPaused(true);
   RCLCPP_INFO(get_logger(), "Servo node has started.");
   pose_tracking_ = std::make_unique<moveit_servo::PoseTracking>(node_, servo_parameters, planning_scene_monitor_);
+  pose_tracking_->stopMotion();
+  pose_tracking_pause = true;
   RCLCPP_INFO(get_logger(), "Pose tracking node has started.");
 }
 
@@ -178,12 +192,14 @@ void ArmRTServer::startServo(const std::shared_ptr<std_srvs::srv::Trigger::Reque
   {
     mode = ControlMode::POSE;
     pose_tracking_->resetTargetPose();
+    pose_tracking_pause = false;
+    pose_tracking_stop = false;
     std::thread([this]() { moveToPoseUpdate(); }).detach();
   }
   else if (desired_mode_ == ControlMode::TWIST)
   {
     mode = ControlMode::TWIST;
-
+    servo_->setPaused(false);
     servo_->start();
   }
   mode_lock.unlock();
@@ -206,6 +222,7 @@ void ArmRTServer::stopServo(const std::shared_ptr<std_srvs::srv::Trigger::Reques
 void ArmRTServer::pauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& /* unused */,
                              const std::shared_ptr<std_srvs::srv::Trigger::Response>& response)
 {
+  mode_lock.lock();
   if (desired_mode_ == ControlMode::POSE)
   {
     servo_->setPaused(true);
@@ -215,12 +232,15 @@ void ArmRTServer::pauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Reque
     pose_tracking_pause = true;
   }
 
+  mode = ControlMode::IDLE;
+  mode_lock.unlock();
   response->success = true;
 }
 
 void ArmRTServer::unpauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Request>& /* unused */,
                                const std::shared_ptr<std_srvs::srv::Trigger::Response>& response)
 {
+  mode_lock.lock();
   if (desired_mode_ == ControlMode::POSE)
   {
     servo_->setPaused(false);
@@ -229,6 +249,17 @@ void ArmRTServer::unpauseServo(const std::shared_ptr<std_srvs::srv::Trigger::Req
   {
     pose_tracking_pause = false;
   }
+  else
+  {
+    RCLCPP_WARN(get_logger(), "Invalid desired mode!");
+    response->success = false;
+    mode_lock.unlock();
+    return;
+  }
+
+  mode = desired_mode_;
+  mode_lock.unlock();
+  response->success = true;
 }
 
 void ArmRTServer::switchMode(const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
