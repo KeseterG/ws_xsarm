@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: moveit_resources_panda_description
+    relative_path: urdf/walliV2.urdf
+  srdf:
+    relative_path: config/walliV2.srdf
+  package_settings:
+    author_name: Matthew Kerner
+    author_email: mkerner1876@gmail.com
+    generated_timestamp: 1691472623
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>walli_description</name>
+  <version>2.0.6</version>
+  <description>Wallii Resources used for MoveIt testing</description>
+
+  <author email="zchai33@gatech.edu">Zimeng Chai</author>
+  <maintainer email="zchai33@gatech.edu">Zimeng Chai</maintainer>
+
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <export>
+      <build_type>ament_cmake</build_type>
+  </export>
+</package>
