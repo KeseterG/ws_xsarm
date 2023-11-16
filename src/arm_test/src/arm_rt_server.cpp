@@ -44,7 +44,7 @@ ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options)
                        "in the launch file");
   }
 
-  declare_parameter<std::string>("arm_planning_group", "interbotix_arm");
+  declare_parameter<std::string>("arm_planning_group", "arm");
 
   // Set up services for interacting with Servo
   start_servo_service_ = node_->create_service<std_srvs::srv::Trigger>(
