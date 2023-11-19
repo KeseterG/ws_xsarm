@@ -1,19 +1,19 @@
 ###############################################
 # Modify all parameters related to servoing here
 ###############################################
-use_gazebo: true # Whether the robot is started in a Gazebo simulation environment
+use_gazebo: false # Whether the robot is started in a Gazebo simulation environment
 
 ## Properties of incoming commands
 command_in_type: "unitless" # "unitless"> in the range [-1:1], as if from joystick. "speed_units"> cmds are in m/s and rad/s
 scale:
   # Scale parameters are only used if command_in_type=="unitless"
-  linear:  0.8 # Max linear velocity. Meters per publish_period. Unit is [m/s]. Only used for Cartesian commands.
-  rotational:  3.14 # Max angular velocity. Rads per publish_period. Unit is [rad/s]. Only used for Cartesian commands.
+  linear:  0.5 # Max linear velocity. Meters per publish_period. Unit is [m/s]. Only used for Cartesian commands.
+  rotational:  2.00 # Max angular velocity. Rads per publish_period. Unit is [rad/s]. Only used for Cartesian commands.
   # Max joint angular/linear velocity. Rads or Meters per publish period. Only used for joint commands on joint_command_in_topic.
-  joint: 3.14
+  joint: 2.00
 
 ## Properties of outgoing commands
-publish_period: 0.01  # 1/Nominal publish rate [seconds]
+publish_period: 0.1 # 1/Nominal publish rate [seconds]
 low_latency_mode: false  # Set this to true to publish as soon as an incoming Twist command is received (publish_period is ignored)
 
 # What type of topic does your robot driver expect?
@@ -71,4 +71,4 @@ min_allowable_collision_distance: 0.01 # Stop if a collision is closer than this
 x_proportional_gain: 1.5
 y_proportional_gain: 1.5
 z_proportional_gain: 1.5
-angular_proportional_gain: 0.2
+angular_proportional_gain: 0.5

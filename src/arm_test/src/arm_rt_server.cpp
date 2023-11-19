@@ -31,9 +31,8 @@
 namespace urc_arm::server
 {
 ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options)
-  : rclcpp::Node("arm_rt_server", options)
-  , node_{ std::make_shared<rclcpp::Node>("servo_node", options) }
-  , move_group_node_{ std::make_shared<rclcpp::Node>("move_group_node", options) }
+  : rclcpp::Node("arm_rt_server", options), node_{ std::make_shared<rclcpp::Node>("servo_node", options) }
+// , move_group_node_{ std::make_shared<rclcpp::Node>("move_group_node", options) }
 {
   RCLCPP_INFO(get_logger(), "Servo node starting...");
   if (!options.use_intra_process_comms())
@@ -44,7 +43,7 @@ ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options)
                        "in the launch file");
   }
 
-  declare_parameter<std::string>("arm_planning_group", "arm");
+  declare_parameter<std::string>("arm_planning_group", "interbotix_arm");
 
   // Set up services for interacting with Servo
   start_servo_service_ = node_->create_service<std_srvs::srv::Trigger>(
@@ -88,17 +87,17 @@ ArmRTServer::ArmRTServer(const rclcpp::NodeOptions& options)
   std::string robot_description_name = "robot_description";
   node_->get_parameter_or("robot_description_name", robot_description_name, robot_description_name);
 
-  // spin the node for getting parameters
-  move_group_node_ = rclcpp::Node::make_shared("move_group_node");
-  move_group_node_executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
-  move_group_node_executor_->add_node(move_group_node_);
-  std::thread([this]() { this->move_group_node_executor_->spin(); }).detach();
+  // // spin the node for getting parameters
+  // move_group_node_ = rclcpp::Node::make_shared("move_group_node");
+  // move_group_node_executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+  // move_group_node_executor_->add_node(move_group_node_);
+  // std::thread([this]() { this->move_group_node_executor_->spin(); }).detach();
 
-  // // setup move groups & joint model group
-  std::string arm_planning_group_name = get_parameter("arm_planning_group").as_string();
-  move_group_ =
-      std::make_shared<moveit::planning_interface::MoveGroupInterface>(move_group_node_, arm_planning_group_name);
-  RCLCPP_INFO(this->get_logger(), "Succesfully lode move group %s for the arm.", arm_planning_group_name.c_str());
+  // // // setup move groups & joint model group
+  // std::string arm_planning_group_name = get_parameter("arm_planning_group").as_string();
+  // move_group_ =
+  //     std::make_shared<moveit::planning_interface::MoveGroupInterface>(move_group_node_, arm_planning_group_name);
+  // RCLCPP_INFO(this->get_logger(), "Succesfully lode move group %s for the arm.", arm_planning_group_name.c_str());
 
   // Get the servo parameters
   auto servo_parameters = moveit_servo::ServoParameters::makeServoParameters(node_);
