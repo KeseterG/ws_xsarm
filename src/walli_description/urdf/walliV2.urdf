@@ -27,7 +27,7 @@ Stephen Brawner (brawner@gmail.com)
       </geometry>
     </collision>
   </link>
-  <link
+  <!-- <link
     name="rightrocker">
     <inertial>
       <origin
@@ -546,7 +546,7 @@ Stephen Brawner (brawner@gmail.com)
     <dynamics
       damping="0"
       friction="4" />
-  </joint>
+  </joint> -->
   <link
     name="spine">
     <inertial>
